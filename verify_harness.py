@@ -101,6 +101,17 @@ def verify_model(model_id: str, device: str | None) -> dict:
     print(f"  [4] all {len(all_heads)} heads patched: effect = "
           f"{r_all['effect']:+.3f}  (embeddings stay corrupted; <1.0 expected)")
 
+    # [4b] all heads + token embeddings = every encoder quantity is clean by
+    # induction -> MUST fully recover. Sine pair: both periods complete integer
+    # cycles at this length, so clean/corrupted scales match and the effect is
+    # not scale-confounded.
+    spair = period_pair(7, 12, length=168, kind="sine", noise=0.05, seed=0)
+    r_full_heads = patch_heads(pipe, spair.clean.values, spair.corrupted.values,
+                               all_heads, patch_embed=True)
+    assert abs(r_full_heads["effect"] - 1.0) < 0.02, r_full_heads
+    print(f"  [4b] all heads + embeddings patched: effect = "
+          f"{r_full_heads['effect']:.4f}  (full recovery)  OK")
+
     # [5] forecast sanity
     yc = predict_value(pipe, pair.clean.values)
     d_clean = abs(yc - pair.clean.future[0])

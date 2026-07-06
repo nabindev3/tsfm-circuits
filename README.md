@@ -19,16 +19,18 @@ ago predicts the next one").
 | `verify_harness.py` | ✅ 4/4 models pass | harness lock: identity patch, exact full recovery (effect=1.0000), reshape unit test |
 | `demo.py` | ✅ verified on-device | RQ1 descriptive: score every head for seasonal attention |
 | `patch_demo.py` | ✅ verified on-device | RQ1 causal: patch every head on period-7↔12 minimal pairs |
-| `inventory.py` | ✅ run on 4 scales | **descriptive circuit inventory**: seasonal heads (w/ scrambled control), trend probes, changepoint components → `results/` |
+| `inventory.py` | ✅ run on 4 scales | **descriptive circuit inventory**: ranked candidates vs uniform null + scrambled/permutation controls, with 95% bootstrap CIs → `results/` |
 | `reproduce.sh` | ✅ | rerun everything with fixed seeds, logged to `logs/` |
 
 The harness is verified on all four study models — `chronos-t5-{mini,small,base,large}`
 (4L×8H / 6L×8H / 12L×12H / 24L×16H) — on this machine (MPS, interpreter
-`~/.venvs/tsfm-sae-difficulty`; conda base has a broken chronos). On every model the
-encoder-output patch reproduces clean logits exactly (effect 1.0000) and the identity
-patch is a numerical no-op. Patching *all heads* gives effect ≈ 0.9–1.5 (not expected
-to be 1.0: the residual stream carries corrupted embeddings past every splice; >1
-means the attention pathway overshoots the behavioral gap).
+`~/.venvs/tsfm-sae-difficulty`; conda base has a broken chronos). On every model:
+the encoder-output patch reproduces clean logits exactly (effect 1.0000), **all heads
++ token embeddings patched gives full recovery (effect = 1.0)** — the "patch
+everything → clean behavior" trivial case — and the identity patch is a numerical
+no-op. Patching all heads *without* embeddings gives effect ≈ 0.9–1.5 (correctly not
+1.0: the residual stream carries corrupted embeddings past every splice; >1 means the
+attention pathway overshoots the behavioral gap).
 
 ## Quick start
 

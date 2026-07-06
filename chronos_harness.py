@@ -167,14 +167,25 @@ def _encoder_o_module(pipe, layer: int):
 
 
 @torch.no_grad()
-def _capture_pre_o(pipe, ids, mask, layers) -> dict:
-    """Run once, capture the pre-`o` tensor at each requested encoder layer."""
+def _capture_pre_o(pipe, ids, mask, layers, capture_embed: bool = False) -> dict:
+    """Run once, capture the pre-`o` tensor at each requested encoder layer
+    (and optionally the encoder token embeddings)."""
     store: dict = {}
     handles = []
     for layer in layers:
         def hook(module, args, _layer=layer):
             store[_layer] = args[0].detach().clone()
         handles.append(_encoder_o_module(pipe, layer).register_forward_pre_hook(hook))
+    if capture_embed:
+        L = ids.shape[1]
+
+        def ehook(module, args, output):
+            # embed_tokens is shared with the decoder; only the encoder call
+            # has our full sequence length
+            if output.shape[1] == L:
+                store["embed"] = output.detach().clone()
+        handles.append(
+            get_inner(pipe).encoder.embed_tokens.register_forward_hook(ehook))
     try:
         logits = _first_step_logits(pipe, ids, mask)
     finally:
@@ -186,7 +197,8 @@ def _capture_pre_o(pipe, ids, mask, layers) -> dict:
 
 @torch.no_grad()
 def patch_heads(pipe, clean_values: np.ndarray, corr_values: np.ndarray,
-                heads: list, _clean_store: dict | None = None) -> dict:
+                heads: list, _clean_store: dict | None = None,
+                patch_embed: bool = False) -> dict:
     """Run the corrupted series with a GROUP of encoder heads spliced from the
     clean run. `heads` is a list of (layer, head) pairs, patched simultaneously —
     the group version matters because seasonal behavior is distributed across
@@ -207,7 +219,8 @@ def patch_heads(pipe, clean_values: np.ndarray, corr_values: np.ndarray,
             f"minimal pair must tokenize to equal length, got {ids_cl.shape} vs "
             f"{ids_co.shape} — use same-length series from synthetic.py")
 
-    store = _clean_store or _capture_pre_o(pipe, ids_cl, mask_cl, list(by_layer))
+    store = _clean_store or _capture_pre_o(pipe, ids_cl, mask_cl, list(by_layer),
+                                           capture_embed=patch_embed)
     yhat_clean = _expected_value(pipe, store["logits"], float(scale_cl[0]))
     yhat_corr = _expected_value(pipe, _first_step_logits(pipe, ids_co, mask_co),
                                 float(scale_co[0]))
@@ -229,6 +242,15 @@ def patch_heads(pipe, clean_values: np.ndarray, corr_values: np.ndarray,
             make_splice(store[layer], tuple(layer_heads)))
         for layer, layer_heads in by_layer.items()
     ]
+    if patch_embed:
+        clean_embed = store["embed"]
+
+        def esplice(module, args, output):
+            # shape guard: the shared embedding also embeds decoder tokens
+            return clean_embed if output.shape == clean_embed.shape else output
+
+        handles.append(get_inner(pipe).encoder.embed_tokens
+                       .register_forward_hook(esplice))
     try:
         yhat_patched = _expected_value(
             pipe, _first_step_logits(pipe, ids_co, mask_co), float(scale_co[0]))

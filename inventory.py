@@ -35,14 +35,14 @@ from pathlib import Path
 
 import numpy as np
 
-from attention_analysis import head_scores
+from attention_analysis import bootstrap_ci, head_scores
 from chronos_harness import get_inner, load_pipeline, run_with_cache
 from synthetic import changepoint_pair, seasonal, trend
 from verify_harness import STUDY_MODELS
 
 LENGTH = 168          # integer multiple of 7, 12, and 24
 NOISE = 0.05
-SEEDS = range(5)      # exploratory (< 100)
+SEEDS = range(10)     # exploratory (< 100)
 PERIODS = (7, 12, 24)
 
 
@@ -52,7 +52,7 @@ PERIODS = (7, 12, 24)
 
 
 def seasonal_inventory(pipe) -> dict:
-    real, scrambled = {}, {}
+    real, scrambled, by_seed = {}, {}, {}
     for period in PERIODS:
         rs, ss = [], []
         for seed in SEEDS:
@@ -64,6 +64,7 @@ def seasonal_inventory(pipe) -> dict:
             cache_s = run_with_cache(pipe, perm)
             ss.append(head_scores(cache_s.attn, period,
                                   valid_len=cache_s.valid_len))
+        by_seed[period] = np.stack(rs)          # [seeds, layers, heads]
         real[period] = np.mean(rs, axis=0)
         scrambled[period] = np.mean(ss, axis=0)
 
@@ -78,20 +79,25 @@ def seasonal_inventory(pipe) -> dict:
                       and real[p][l, h] > 2.0 * scrambled[p][l, h]]
             if len(strong) >= 2:
                 candidates.append((l, h))
-    return dict(real=real, scrambled=scrambled, gm=gm, candidates=candidates)
+    return dict(real=real, scrambled=scrambled, by_seed=by_seed, gm=gm,
+                candidates=candidates)
 
 
 def report_seasonal(res: dict, top: int = 10) -> None:
     order = np.argsort(res["gm"], axis=None)[::-1][:top]
     print("  [seasonal] head: ratio-vs-null @ P7 | P12 | P24 "
-          "(scrambled control in parens), gm = geometric mean")
+          "(scrambled control in parens), gm = geometric mean,")
+    print("             CI = 95% bootstrap over seeds at the head's best period")
     for flat in order:
         l, h = np.unravel_index(flat, res["gm"].shape)
         cells = " | ".join(
             f"{res['real'][p][l, h]:5.2f} ({res['scrambled'][p][l, h]:4.2f})"
             for p in PERIODS)
+        best_p = max(PERIODS, key=lambda p: res["real"][p][l, h])
+        _, lo, hi = bootstrap_ci(res["by_seed"][best_p][:, l, h])
         mark = "  CANDIDATE" if (int(l), int(h)) in res["candidates"] else ""
-        print(f"    L{l}H{h:<3} {cells}  gm={res['gm'][l, h]:5.2f}{mark}")
+        print(f"    L{l}H{h:<3} {cells}  gm={res['gm'][l, h]:5.2f}  "
+              f"CI@P{best_p}=[{lo:.2f},{hi:.2f}]{mark}")
     print(f"  candidates (>=3x null & >=2x scrambled at >=2 periods): "
           f"{['L%dH%d' % c for c in res['candidates']]}")
 
@@ -103,7 +109,7 @@ def report_seasonal(res: dict, top: int = 10) -> None:
 
 def trend_probe(pipe, n_per_class: int = 40) -> dict:
     from sklearn.linear_model import LogisticRegression, Ridge
-    from sklearn.model_selection import cross_val_score
+    from sklearn.model_selection import RepeatedKFold, cross_val_score
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
 
@@ -123,28 +129,52 @@ def trend_probe(pipe, n_per_class: int = 40) -> dict:
     X = np.stack(feats)                        # [n, layers, d]
     y_sign, y_slope = np.array(signs), np.array(slopes)
 
-    acc, r2 = [], []
+    # label-permutation control: same pipeline, shuffled targets — the probe's
+    # chance floor (acc ~0.5, R^2 <= 0)
+    prng = np.random.default_rng(12345)
+    y_sign_perm = prng.permutation(y_sign)
+    y_slope_perm = prng.permutation(y_slope)
+
+    cv = RepeatedKFold(n_splits=5, n_repeats=4, random_state=0)
+    acc, r2, acc_perm, r2_perm, acc_folds, r2_folds = [], [], [], [], [], []
     for layer in range(X.shape[1]):
         Xl = X[:, layer, :]
         clf = make_pipeline(StandardScaler(), LogisticRegression(
             penalty="l1", solver="liblinear", C=1.0, max_iter=2000))
-        acc.append(float(cross_val_score(clf, Xl, y_sign, cv=5).mean()))
+        a = cross_val_score(clf, Xl, y_sign, cv=cv)
+        acc.append(float(a.mean()))
+        acc_folds.append(a)
+        acc_perm.append(float(cross_val_score(clf, Xl, y_sign_perm,
+                                              cv=5).mean()))
         reg = make_pipeline(StandardScaler(), Ridge(alpha=10.0))
-        r2.append(float(cross_val_score(reg, Xl, y_slope, cv=5,
-                                        scoring="r2").mean()))
-    return dict(acc=acc, r2=r2, peak_layer=int(np.argmax(acc)),
-                peak_acc=float(max(acc)), peak_r2_layer=int(np.argmax(r2)),
-                peak_r2=float(max(r2)))
+        r = cross_val_score(reg, Xl, y_slope, cv=cv, scoring="r2")
+        r2.append(float(r.mean()))
+        r2_folds.append(r)
+        r2_perm.append(float(cross_val_score(reg, Xl, y_slope_perm, cv=5,
+                                             scoring="r2").mean()))
+
+    peak, peak_r2_l = int(np.argmax(acc)), int(np.argmax(r2))
+    _, acc_lo, acc_hi = bootstrap_ci(acc_folds[peak])
+    _, r2_lo, r2_hi = bootstrap_ci(r2_folds[peak_r2_l])
+    return dict(acc=acc, r2=r2, acc_perm=acc_perm, r2_perm=r2_perm,
+                peak_layer=peak, peak_acc=float(max(acc)),
+                peak_acc_ci=[acc_lo, acc_hi],
+                peak_r2_layer=peak_r2_l, peak_r2=float(max(r2)),
+                peak_r2_ci=[r2_lo, r2_hi])
 
 
 def report_trend(res: dict) -> None:
-    print("  [trend] L1-logistic sign accuracy by layer (5-fold CV):")
+    print("  [trend] L1-logistic sign accuracy by layer (5x4 repeated CV):")
     print("    " + " ".join(f"L{i}:{a:.2f}" for i, a in enumerate(res["acc"])))
     print("    ridge R^2 (signed slope): "
           + " ".join(f"L{i}:{r:+.2f}" for i, r in enumerate(res["r2"])))
+    print(f"    permutation control: acc max {max(res['acc_perm']):.2f} "
+          f"(chance 0.50), R^2 max {max(res['r2_perm']):+.2f}")
     print(f"    candidate trend subspace: layer {res['peak_layer']} "
-          f"(acc {res['peak_acc']:.2f}); magnitude peaks at layer "
-          f"{res['peak_r2_layer']} (R^2 {res['peak_r2']:+.2f})")
+          f"(acc {res['peak_acc']:.2f} CI[{res['peak_acc_ci'][0]:.2f},"
+          f"{res['peak_acc_ci'][1]:.2f}]); magnitude peaks at layer "
+          f"{res['peak_r2_layer']} (R^2 {res['peak_r2']:+.2f} "
+          f"CI[{res['peak_r2_ci'][0]:+.2f},{res['peak_r2_ci'][1]:+.2f}])")
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +183,7 @@ def report_trend(res: dict) -> None:
 
 
 def changepoint_inventory(pipe, period: int = 7) -> dict:
-    collapse_list, spike_list, peaks = [], [], []
+    collapse_list, spike_list, peaks, dir_list = [], [], [], []
     cp_at = None
     for seed in SEEDS:
         pair = changepoint_pair(period=period, length=LENGTH, cp_kind="pattern",
@@ -173,21 +203,36 @@ def changepoint_inventory(pipe, period: int = 7) -> dict:
             per_head.append((m_cp - m_st).numpy())
         collapse_list.append(np.stack(per_head))            # [layers, heads]
 
-        # residual-stream delta-norm profile per layer; spike near the CP
-        spikes, pk = [], []
+        # residual-stream delta-norm profile per layer; spike near the CP.
+        # also keep the unit delta-vector at each layer's peak — the candidate
+        # "changepoint direction" for RQ3 steering/ablation
+        spikes, pk, dirs = [], [], []
         for r_cp, r_st in zip(c_cp.resid, c_st.resid):
-            d = (r_cp - r_st).norm(dim=-1).numpy()          # [L]
+            delta = (r_cp - r_st).numpy()                   # [L, d]
+            d = np.linalg.norm(delta, axis=-1)
             background = np.median(d[5:cp_at - 5])
             window = d[cp_at - 2:cp_at + period + 1]
             spikes.append(float(window.max() / (background + 1e-9)))
-            pk.append(int(np.argmax(d)))
+            peak_i = int(np.argmax(d))
+            pk.append(peak_i)
+            dirs.append(delta[peak_i] / (d[peak_i] + 1e-9))
         spike_list.append(spikes)
         peaks.append(pk)
+        dir_list.append(np.stack(dirs))                     # [layers, d]
 
+    spike_by_seed = np.stack(spike_list)                    # [seeds, layers]
+    # seed-mean unit direction per layer, renormalized
+    mean_dir = np.mean(dir_list, axis=0)
+    mean_dir /= np.linalg.norm(mean_dir, axis=-1, keepdims=True) + 1e-9
+    # coherence: how aligned the per-seed peak directions are (1 = identical)
+    coherence = np.array([
+        float(np.mean([d[l] @ mean_dir[l] for d in dir_list]))
+        for l in range(mean_dir.shape[0])])
     return dict(collapse=np.mean(collapse_list, axis=0),
-                spike=np.mean(spike_list, axis=0),
+                collapse_by_seed=np.stack(collapse_list),
+                spike=spike_by_seed.mean(0), spike_by_seed=spike_by_seed,
                 peak_pos=np.median(peaks, axis=0).astype(int),
-                cp_at=cp_at)
+                direction=mean_dir, dir_coherence=coherence, cp_at=cp_at)
 
 
 def report_changepoint(res: dict, top: int = 5) -> None:
@@ -195,15 +240,19 @@ def report_changepoint(res: dict, top: int = 5) -> None:
     heads = []
     for flat in order:
         l, h = np.unravel_index(flat, res["collapse"].shape)
-        heads.append(f"L{l}H{h} {res['collapse'][l, h]:+.3f}")
+        _, lo, hi = bootstrap_ci(res["collapse_by_seed"][:, l, h])
+        heads.append(f"L{l}H{h} {res['collapse'][l, h]:+.3f} [{lo:+.3f},{hi:+.3f}]")
     print(f"  [changepoint] cp_at={res['cp_at']}; top post-CP attention-collapse "
-          f"heads (delta mass vs stationary control):")
+          f"heads (delta mass vs stationary control, 95% CI over seeds):")
     print("    " + " | ".join(heads))
     best = int(np.argmax(res["spike"]))
+    _, s_lo, s_hi = bootstrap_ci(res["spike_by_seed"][:, best])
     print("    resid delta-norm spike ratio by layer: "
           + " ".join(f"L{i}:{s:.1f}" for i, s in enumerate(res["spike"])))
     print(f"    strongest spike: layer {best} ({res['spike'][best]:.1f}x "
-          f"background, peak at position {res['peak_pos'][best]})")
+          f"background CI[{s_lo:.1f},{s_hi:.1f}], peak at position "
+          f"{res['peak_pos'][best]}, direction coherence across seeds "
+          f"{res['dir_coherence'][best]:.2f})")
 
 
 # ---------------------------------------------------------------------------
@@ -229,12 +278,17 @@ def run_model(model_id: str, device: str | None, out_dir: Path) -> dict:
         seasonal=dict(
             real={str(p): sea["real"][p].tolist() for p in PERIODS},
             scrambled={str(p): sea["scrambled"][p].tolist() for p in PERIODS},
+            by_seed={str(p): sea["by_seed"][p].tolist() for p in PERIODS},
             gm=sea["gm"].tolist(),
             candidates=[list(c) for c in sea["candidates"]]),
         trend=tre,
         changepoint=dict(collapse=cpt["collapse"].tolist(),
+                         collapse_by_seed=cpt["collapse_by_seed"].tolist(),
                          spike=cpt["spike"].tolist(),
+                         spike_by_seed=cpt["spike_by_seed"].tolist(),
                          peak_pos=cpt["peak_pos"].tolist(),
+                         direction=cpt["direction"].tolist(),
+                         dir_coherence=cpt["dir_coherence"].tolist(),
                          cp_at=cpt["cp_at"]),
     )
     out = out_dir / f"inventory-{model_id.split('/')[-1]}.json"
