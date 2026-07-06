@@ -20,6 +20,7 @@ ago predicts the next one").
 | `demo.py` | ✅ verified on-device | RQ1 descriptive: score every head for seasonal attention |
 | `patch_demo.py` | ✅ verified on-device | RQ1 causal: patch every head on period-7↔12 minimal pairs |
 | `inventory.py` | ✅ run on 4 scales | **descriptive circuit inventory**: ranked candidates vs uniform null + scrambled/permutation controls, with 95% bootstrap CIs → `results/` |
+| `causal.py` | ✅ run on 4 scales | **Stage 2 causal validation**: group/single-position patching on 4 pair types, controls, permutation nulls, path patching → `results/` |
 | `reproduce.sh` | ✅ | rerun everything with fixed seeds, logged to `logs/` |
 
 The harness is verified on all four study models — `chronos-t5-{mini,small,base,large}`
@@ -43,6 +44,7 @@ python chronos_harness.py --device mps   # smoke: cache + forecast metric + patc
 python demo.py --device mps    # RQ1 descriptive: seasonal heads in Chronos-T5-small
 python patch_demo.py --device mps        # RQ1 causal: per-head patching effects
 python inventory.py --device mps         # full descriptive inventory, all 4 scales
+python causal.py --device mps  # Stage 2: causal validation sweep, all 4 scales
 ./reproduce.sh                 # all of the above, logged to logs/
 ```
 
@@ -88,8 +90,11 @@ use groups; single heads understate distributed circuits (see results above).
 
 1. ✅ harness: synthetic generator + activation caching; 🔒 locked by
    `verify_harness.py` (4/4 models) + `PREREGISTRATION.md`
-2. ✅ **RQ1 descriptive** — `demo.py`: rank heads by seasonal attention *(exploratory)*
-3. ✅ **RQ1 causal** — `patch_demo.py` + group patching on period-7↔12 pairs
+2. ✅ **RQ1 descriptive** — `demo.py` + `inventory.py`: rank heads by seasonal
+   attention vs two nulls *(exploratory)*
+3. ✅ **RQ1 causal** — `causal.py`: group/single-position patching on
+   period/phase/trend-on-off/changepoint-location pairs with controls,
+   permutation nulls, and path patching
    *(exploratory; confirmatory rerun on seeds 100–119 pending)*
 4. **RQ2** — probe + steer a trend direction from cached residuals (`cache.resid`)
 5. **RQ3** — changepoint-reset analysis on `season_plus_changepoint` (generator +

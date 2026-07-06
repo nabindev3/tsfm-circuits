@@ -198,13 +198,16 @@ def _capture_pre_o(pipe, ids, mask, layers, capture_embed: bool = False) -> dict
 @torch.no_grad()
 def patch_heads(pipe, clean_values: np.ndarray, corr_values: np.ndarray,
                 heads: list, _clean_store: dict | None = None,
-                patch_embed: bool = False) -> dict:
+                patch_embed: bool = False, positions=None) -> dict:
     """Run the corrupted series with a GROUP of encoder heads spliced from the
     clean run. `heads` is a list of (layer, head) pairs, patched simultaneously —
     the group version matters because seasonal behavior is distributed across
-    backup heads, so single-head patches understate the circuit. Returns
+    backup heads, so single-head patches understate the circuit. `positions`
+    restricts the splice to those sequence positions (None = all positions;
+    single-position patching typically undershoots — report both). Returns
     yhat_clean / yhat_corr / yhat_patched (expected first-step forecast in value
-    space) plus the normalized patching effect."""
+    space), the normalized patching effect, and the first-step logits of all
+    three runs for logit-space metrics."""
     inner = get_inner(pipe)
     cfg = inner.config
     num_heads, d_head = cfg.num_heads, cfg.d_kv
@@ -221,9 +224,11 @@ def patch_heads(pipe, clean_values: np.ndarray, corr_values: np.ndarray,
 
     store = _clean_store or _capture_pre_o(pipe, ids_cl, mask_cl, list(by_layer),
                                            capture_embed=patch_embed)
-    yhat_clean = _expected_value(pipe, store["logits"], float(scale_cl[0]))
-    yhat_corr = _expected_value(pipe, _first_step_logits(pipe, ids_co, mask_co),
-                                float(scale_co[0]))
+    logits_clean = store["logits"]
+    logits_corr = _first_step_logits(pipe, ids_co, mask_co)
+    yhat_clean = _expected_value(pipe, logits_clean, float(scale_cl[0]))
+    yhat_corr = _expected_value(pipe, logits_corr, float(scale_co[0]))
+    pos = slice(None) if positions is None else torch.as_tensor(positions)
 
     def make_splice(clean_pre_o, layer_heads):
         def splice(module, args):
@@ -233,7 +238,7 @@ def patch_heads(pipe, clean_values: np.ndarray, corr_values: np.ndarray,
             out4 = out.view(b, Lc, num_heads, d_head).clone()
             clean4 = clean_pre_o.view(b, Lc, num_heads, d_head)
             for h in layer_heads:
-                out4[:, :, h, :] = clean4[:, :, h, :]
+                out4[:, pos, h, :] = clean4[:, pos, h, :]
             return (out4.view(b, Lc, num_heads * d_head),)
         return splice
 
@@ -252,8 +257,8 @@ def patch_heads(pipe, clean_values: np.ndarray, corr_values: np.ndarray,
         handles.append(get_inner(pipe).encoder.embed_tokens
                        .register_forward_hook(esplice))
     try:
-        yhat_patched = _expected_value(
-            pipe, _first_step_logits(pipe, ids_co, mask_co), float(scale_co[0]))
+        logits_patched = _first_step_logits(pipe, ids_co, mask_co)
+        yhat_patched = _expected_value(pipe, logits_patched, float(scale_co[0]))
     finally:
         for h in handles:
             h.remove()
@@ -262,6 +267,10 @@ def patch_heads(pipe, clean_values: np.ndarray, corr_values: np.ndarray,
         yhat_clean=yhat_clean, yhat_corr=yhat_corr, yhat_patched=yhat_patched,
         effect=patching_effect(yhat_clean, yhat_corr, yhat_patched),
         heads=list(heads),
+        logits_clean=logits_clean[0].float().cpu(),
+        logits_corr=logits_corr[0].float().cpu(),
+        logits_patched=logits_patched[0].float().cpu(),
+        scale_clean=float(scale_cl[0]), scale_corr=float(scale_co[0]),
     )
 
 
@@ -340,6 +349,199 @@ def patch_all_heads(pipe, pair) -> dict:
             effects[layer, head] = r["effect"]
             base = base or dict(yhat_clean=r["yhat_clean"], yhat_corr=r["yhat_corr"])
     return dict(effects=effects, **base)
+
+
+# ---------------------------------------------------------------------------
+# logit-space metric
+# ---------------------------------------------------------------------------
+
+
+def target_token(pipe, value: float, scale: float) -> int:
+    """Token id Chronos assigns to `value` under `scale` (replicates the
+    MeanScaleUniformBins._input_transform quantization exactly)."""
+    tok = pipe.tokenizer
+    t = torch.bucketize(torch.tensor(float(value) / scale), tok.boundaries,
+                        right=True) + tok.config.n_special_tokens
+    return int(torch.clamp(t, 0, tok.config.n_tokens - 1))
+
+
+def logit_diff(pipe, logits: torch.Tensor, y_clean: float, y_corr: float,
+               scale: float) -> float:
+    """m = logit(clean-correct bin) - logit(corrupted-correct bin), both targets
+    quantized under the scale of the run the logits came from. The classic
+    logit-difference metric; patching_effect over m gives normalized recovery."""
+    return float(logits[target_token(pipe, y_clean, scale)]
+                 - logits[target_token(pipe, y_corr, scale)])
+
+
+# ---------------------------------------------------------------------------
+# path patching
+# ---------------------------------------------------------------------------
+
+
+def _ff_branch(pipe, layer: int):
+    return get_inner(pipe).encoder.block[layer].layer[1].DenseReluDense
+
+
+def _decoder_cross_o(pipe, layer: int):
+    return get_inner(pipe).decoder.block[layer].layer[1].EncDecAttention.o
+
+
+@torch.no_grad()
+def patch_head_direct(pipe, clean_values: np.ndarray, corr_values: np.ndarray,
+                      layer: int, head: int) -> dict:
+    """Direct-path patch: splice head (layer, head) clean->corrupted while
+    freezing every DOWNSTREAM encoder branch (self-attention pre-o inputs and
+    FF branch outputs, incl. the sender layer's own FF) to its corrupted-run
+    values. Only the head's direct residual-stream contribution to the encoder
+    output can change; the gap to the ordinary patch_head effect is the part
+    mediated by downstream encoder recomputation."""
+    inner = get_inner(pipe)
+    cfg = inner.config
+    num_heads, d_head, n_layers = cfg.num_heads, cfg.d_kv, cfg.num_layers
+
+    ids_cl, mask_cl, scale_cl = tokenize(pipe, clean_values)
+    ids_co, mask_co, scale_co = tokenize(pipe, corr_values)
+    if ids_cl.shape != ids_co.shape:
+        raise ValueError("minimal pair must tokenize to equal length")
+
+    store = _capture_pre_o(pipe, ids_cl, mask_cl, [layer])
+    yhat_clean = _expected_value(pipe, store["logits"], float(scale_cl[0]))
+
+    # corrupted baseline, capturing everything downstream we must freeze
+    frozen: dict = {}
+    handles = []
+    for l in range(layer + 1, n_layers):
+        def ahook(module, args, _l=l):
+            frozen[("attn", _l)] = args[0].detach().clone()
+        handles.append(_encoder_o_module(pipe, l).register_forward_pre_hook(ahook))
+    for l in range(layer, n_layers):
+        def fhook(module, args, output, _l=l):
+            frozen[("ff", _l)] = output.detach().clone()
+        handles.append(_ff_branch(pipe, l).register_forward_hook(fhook))
+    try:
+        logits_corr = _first_step_logits(pipe, ids_co, mask_co)
+    finally:
+        for h in handles:
+            h.remove()
+    yhat_corr = _expected_value(pipe, logits_corr, float(scale_co[0]))
+
+    # patched run: splice the sender head, clamp all downstream branches
+    clean_pre_o = store[layer]
+
+    def splice(module, args):
+        out = args[0]
+        b, Lc, _ = out.shape
+        out4 = out.view(b, Lc, num_heads, d_head).clone()
+        out4[:, :, head, :] = clean_pre_o.view(b, Lc, num_heads, d_head)[:, :, head, :]
+        return (out4.view(b, Lc, num_heads * d_head),)
+
+    handles = [_encoder_o_module(pipe, layer).register_forward_pre_hook(splice)]
+    for l in range(layer + 1, n_layers):
+        def afreeze(module, args, _l=l):
+            return (frozen[("attn", _l)],)
+        handles.append(_encoder_o_module(pipe, l).register_forward_pre_hook(afreeze))
+    for l in range(layer, n_layers):
+        def ffreeze(module, args, output, _l=l):
+            return frozen[("ff", _l)]
+        handles.append(_ff_branch(pipe, l).register_forward_hook(ffreeze))
+    try:
+        logits_patched = _first_step_logits(pipe, ids_co, mask_co)
+    finally:
+        for h in handles:
+            h.remove()
+    yhat_patched = _expected_value(pipe, logits_patched, float(scale_co[0]))
+
+    return dict(
+        yhat_clean=yhat_clean, yhat_corr=yhat_corr, yhat_patched=yhat_patched,
+        effect=patching_effect(yhat_clean, yhat_corr, yhat_patched),
+        layer=layer, head=head,
+        logits_clean=store["logits"][0].float().cpu(),
+        logits_corr=logits_corr[0].float().cpu(),
+        logits_patched=logits_patched[0].float().cpu(),
+        scale_clean=float(scale_cl[0]), scale_corr=float(scale_co[0]),
+    )
+
+
+@torch.no_grad()
+def cross_attention_receivers(pipe, clean_values: np.ndarray,
+                              corr_values: np.ndarray,
+                              sender_heads: list) -> dict:
+    """Sender -> receiver path patching across the encoder/decoder boundary.
+    Run A = corrupted input with sender encoder heads spliced clean; capture
+    every decoder cross-attention head's pre-o at the first decode step. Then
+    rerun the PLAIN corrupted input once per decoder cross-head, splicing only
+    that head's pre-o from run A: the clean-derived signal can reach the output
+    only through that receiver. receiver_effects[l, h] / sender_effect is the
+    share of the sender's influence flowing through cross-head (l, h)."""
+    inner = get_inner(pipe)
+    cfg = inner.config
+    num_heads, d_head, n_dec = cfg.num_heads, cfg.d_kv, cfg.num_decoder_layers
+
+    ids_cl, mask_cl, scale_cl = tokenize(pipe, clean_values)
+    ids_co, mask_co, scale_co = tokenize(pipe, corr_values)
+    if ids_cl.shape != ids_co.shape:
+        raise ValueError("minimal pair must tokenize to equal length")
+
+    by_layer: dict = {}
+    for l, h in sender_heads:
+        by_layer.setdefault(l, []).append(h)
+    store = _capture_pre_o(pipe, ids_cl, mask_cl, list(by_layer))
+    yhat_clean = _expected_value(pipe, store["logits"], float(scale_cl[0]))
+    yhat_corr = _expected_value(
+        pipe, _first_step_logits(pipe, ids_co, mask_co), float(scale_co[0]))
+
+    # run A: sender patched, capture decoder cross pre-o per layer
+    a_cross: dict = {}
+    handles = []
+    for layer, layer_heads in by_layer.items():
+        def make_splice(clean_pre_o, hs):
+            def splice(module, args):
+                out = args[0]
+                b, Lc, _ = out.shape
+                out4 = out.view(b, Lc, num_heads, d_head).clone()
+                c4 = clean_pre_o.view(b, Lc, num_heads, d_head)
+                for h in hs:
+                    out4[:, :, h, :] = c4[:, :, h, :]
+                return (out4.view(b, Lc, num_heads * d_head),)
+            return splice
+        handles.append(_encoder_o_module(pipe, layer).register_forward_pre_hook(
+            make_splice(store[layer], tuple(layer_heads))))
+    for dl in range(n_dec):
+        def chook(module, args, _dl=dl):
+            a_cross[_dl] = args[0].detach().clone()
+        handles.append(_decoder_cross_o(pipe, dl).register_forward_pre_hook(chook))
+    try:
+        logits_a = _first_step_logits(pipe, ids_co, mask_co)
+    finally:
+        for h in handles:
+            h.remove()
+    sender_effect = patching_effect(
+        yhat_clean, yhat_corr,
+        _expected_value(pipe, logits_a, float(scale_co[0])))
+
+    # one plain-corrupted run per receiver cross-head, splicing from run A
+    effects = np.zeros((n_dec, num_heads))
+    for dl in range(n_dec):
+        for dh in range(num_heads):
+            def rsplice(module, args, _dl=dl, _dh=dh):
+                out = args[0]
+                b, Lc, _ = out.shape
+                out4 = out.view(b, Lc, num_heads, d_head).clone()
+                a4 = a_cross[_dl].view(b, Lc, num_heads, d_head)
+                out4[:, :, _dh, :] = a4[:, :, _dh, :]
+                return (out4.view(b, Lc, num_heads * d_head),)
+            handle = _decoder_cross_o(pipe, dl).register_forward_pre_hook(rsplice)
+            try:
+                yp = _expected_value(
+                    pipe, _first_step_logits(pipe, ids_co, mask_co),
+                    float(scale_co[0]))
+            finally:
+                handle.remove()
+            effects[dl, dh] = patching_effect(yhat_clean, yhat_corr, yp)
+
+    return dict(receiver_effects=effects, sender_effect=float(sender_effect),
+                yhat_clean=yhat_clean, yhat_corr=yhat_corr)
 
 
 # ---------------------------------------------------------------------------

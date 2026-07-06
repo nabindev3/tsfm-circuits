@@ -194,6 +194,76 @@ def trend_pair(slope: float = 0.02, length: int = 140, horizon: int = 1,
     return MinimalPair(clean, corr, differs="trend_sign")
 
 
+def phase_pair(period: int = 7, length: int = 168, horizon: int = 1,
+               shift: int | None = None, kind: str = "pattern",
+               amplitude: float = 1.0, noise: float = 0.0, seed: int = 0,
+               min_divergence: float = 0.5) -> MinimalPair:
+    """Same period, same cycle pattern, same noise — only the phase differs
+    (default shift: half a period). The sharpest test that a head tracks WHERE
+    in the cycle we are, not just that a cycle exists."""
+    if shift is None:
+        shift = period // 2
+    nv = _shared_noise(noise, length + horizon, seed)
+    for attempt in range(200):
+        pseed = seed + 30_000 + attempt
+        clean = seasonal(period, length, horizon, kind, amplitude, 0.0, noise,
+                         0, seed, pattern_seed=pseed, noise_values=nv)
+        corr = seasonal(period, length, horizon, kind, amplitude, 0.0, noise,
+                        shift, seed, pattern_seed=pseed, noise_values=nv)
+        if abs(clean.future[0] - corr.future[0]) >= min_divergence * amplitude:
+            return MinimalPair(clean, corr, differs="phase")
+    raise RuntimeError("could not build a divergent phase pair")
+
+
+def trend_onoff_pair(period: int = 7, slope: float = 0.03, length: int = 168,
+                     horizon: int = 1, kind: str = "pattern",
+                     amplitude: float = 1.0, noise: float = 0.0,
+                     seed: int = 0) -> MinimalPair:
+    """clean = seasonal + linear trend, corrupted = the same seasonal component
+    with the trend removed. Same pattern, same noise; only the trend differs."""
+    nv = _shared_noise(noise, length + horizon, seed)
+    base = seasonal(period, length, horizon, kind, amplitude, 0.0, 0.0, 0, seed)
+    ramp = trend(slope, length, horizon, 0.0, 0.0, seed)
+    full_on = np.concatenate([base.values + ramp.values, base.future + ramp.future])
+    full_off = np.concatenate([base.values, base.future])
+    if nv is not None:
+        full_on, full_off = full_on + nv, full_off + nv
+    meta = dict(base.meta, slope=slope, noise=noise)
+    clean = Series(full_on[:length], full_on[length:], dict(meta, trend="on"))
+    corr = Series(full_off[:length], full_off[length:], dict(meta, trend="off"))
+    return MinimalPair(clean, corr, differs="trend_onoff")
+
+
+def changepoint_location_pair(period: int = 7, length: int = 168,
+                              horizon: int = 1, cp_frac_clean: float = 0.4,
+                              cp_frac_corr: float = 0.7, kind: str = "pattern",
+                              amplitude: float = 1.0, noise: float = 0.0,
+                              seed: int = 0,
+                              min_divergence: float = 0.5) -> MinimalPair:
+    """Both series switch from the same pre-pattern to the same post-pattern —
+    only WHERE the changepoint sits differs. Isolates changepoint-location
+    information from everything else. Retries pattern seeds until the two
+    continuations diverge (different cp positions leave the post-pattern at
+    different phases, but not every pattern separates at t+1)."""
+    nv = _shared_noise(noise, length + horizon, seed)
+    for attempt in range(200):
+        s_eff = seed if attempt == 0 else seed + 40_000 + attempt
+        out = []
+        for frac in (cp_frac_clean, cp_frac_corr):
+            s = season_plus_changepoint(period, length, horizon,
+                                        cp_at=int(length * frac),
+                                        cp_kind="pattern", kind=kind,
+                                        amplitude=amplitude, noise=0.0,
+                                        seed=s_eff)
+            full = np.concatenate([s.values, s.future])
+            if nv is not None:
+                full = full + nv
+            out.append(Series(full[:length], full[length:], s.meta))
+        if abs(out[0].future[0] - out[1].future[0]) >= min_divergence * amplitude:
+            return MinimalPair(out[0], out[1], differs="changepoint_location")
+    raise RuntimeError("could not build a divergent changepoint-location pair")
+
+
 # ---------------------------------------------------------------------------
 # self-tests
 # ---------------------------------------------------------------------------
@@ -256,6 +326,34 @@ def _self_test() -> None:
     tpair = trend_pair(slope=0.02, length=100, seed=6)
     assert np.isclose(tpair.clean.future[0], -tpair.corrupted.future[0] +
                       2 * 0.0, atol=1e-9)
+
+    # phase pair: same period & pattern values, shifted; divergent at t+1
+    ppair = phase_pair(period=7, length=168, noise=0.05, seed=7)
+    assert ppair.divergence >= 0.5
+    c0 = phase_pair(period=7, length=168, seed=7)  # noiseless twin
+    assert np.allclose(np.sort(np.unique(np.round(c0.clean.values, 9))),
+                       np.sort(np.unique(np.round(c0.corrupted.values, 9)))), \
+        "phase pair must reuse the same cycle values"
+    shift = 7 // 2
+    assert np.allclose(c0.clean.values[shift:], c0.corrupted.values[:-shift])
+
+    # trend on/off: difference is exactly the ramp
+    topair = trend_onoff_pair(period=7, slope=0.03, length=168, noise=0.05,
+                              seed=8)
+    d = topair.clean.values - topair.corrupted.values
+    assert np.allclose(d, 0.03 * np.arange(168)), "on-off must differ by the ramp"
+    assert topair.divergence > 3.0
+
+    # changepoint-location pair: same pre and post patterns, different switch,
+    # divergent continuation
+    clpair = changepoint_location_pair(period=7, length=168, seed=9)
+    cp_a = clpair.clean.meta["cp_at"]
+    cp_b = clpair.corrupted.meta["cp_at"]
+    assert cp_a < cp_b
+    assert np.allclose(clpair.clean.values[:cp_a], clpair.corrupted.values[:cp_a])
+    assert not np.allclose(clpair.clean.values[cp_a:cp_b],
+                           clpair.corrupted.values[cp_a:cp_b])
+    assert clpair.divergence >= 0.5
 
     print("synthetic.py: all self-tests passed")
     print(f"  example period pair divergence at t+1: {pair.divergence:.3f} "

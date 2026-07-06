@@ -85,6 +85,22 @@ def patching_effect(clean: float, corrupted: float, patched: float,
     return (patched - corrupted) / denom
 
 
+def permutation_test(group_a, group_b, n_perm: int = 10_000,
+                     seed: int = 0) -> float:
+    """One-sided label-permutation p-value for mean(a) > mean(b). Pools both
+    groups, shuffles labels n_perm times, counts how often a random split beats
+    the observed mean difference."""
+    a, b = np.asarray(group_a, float), np.asarray(group_b, float)
+    observed = a.mean() - b.mean()
+    pooled = np.concatenate([a, b])
+    rng = np.random.default_rng(seed)
+    count = 0
+    for _ in range(n_perm):
+        perm = rng.permutation(pooled)
+        count += (perm[:len(a)].mean() - perm[len(a):].mean()) >= observed
+    return (count + 1) / (n_perm + 1)
+
+
 def bootstrap_ci(values, n_boot: int = 10_000, alpha: float = 0.05,
                  seed: int = 0) -> tuple[float, float, float]:
     """Percentile-bootstrap CI for the mean over independent runs (seeds/series).
@@ -166,6 +182,13 @@ def _self_test() -> None:
         _, lo, hi = bootstrap_ci(s, n_boot=1000, seed=trial)
         covered += lo <= 0.0 <= hi
     assert covered >= 175, f"bootstrap coverage too low: {covered}/200"
+
+    # permutation test: separated groups -> tiny p; identical -> p ~ uniform
+    ga = rng.normal(1.0, 0.3, size=20)
+    gb = rng.normal(0.0, 0.3, size=20)
+    assert permutation_test(ga, gb, n_perm=2000) < 0.01
+    p_null = permutation_test(gb, gb + 0.0, n_perm=2000)
+    assert p_null > 0.2, p_null
 
     print("attention_analysis.py: all self-tests passed")
     print(f"  perfect head: score={perfect.score:.3f} ratio={perfect.ratio:.1f}x | "

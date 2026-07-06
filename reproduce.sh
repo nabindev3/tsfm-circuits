@@ -25,5 +25,6 @@ run harness-smoke      "$PY" chronos_harness.py --device "$DEVICE"
 run demo               "$PY" demo.py --device "$DEVICE"
 run patch-demo         "$PY" patch_demo.py --device "$DEVICE"
 run inventory          "$PY" inventory.py --device "$DEVICE"
+run causal             "$PY" causal.py --device "$DEVICE"
 
 echo "all reproduced — logs in logs/$STAMP-*.log"
