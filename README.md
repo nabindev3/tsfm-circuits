@@ -19,6 +19,7 @@ ago predicts the next one").
 | `verify_harness.py` | ✅ 4/4 models pass | harness lock: identity patch, exact full recovery (effect=1.0000), reshape unit test |
 | `demo.py` | ✅ verified on-device | RQ1 descriptive: score every head for seasonal attention |
 | `patch_demo.py` | ✅ verified on-device | RQ1 causal: patch every head on period-7↔12 minimal pairs |
+| `inventory.py` | ✅ run on 4 scales | **descriptive circuit inventory**: seasonal heads (w/ scrambled control), trend probes, changepoint components → `results/` |
 | `reproduce.sh` | ✅ | rerun everything with fixed seeds, logged to `logs/` |
 
 The harness is verified on all four study models — `chronos-t5-{mini,small,base,large}`
@@ -39,6 +40,7 @@ python verify_harness.py --device mps    # harness lock across all 4 model scale
 python chronos_harness.py --device mps   # smoke: cache + forecast metric + patching
 python demo.py --device mps    # RQ1 descriptive: seasonal heads in Chronos-T5-small
 python patch_demo.py --device mps        # RQ1 causal: per-head patching effects
+python inventory.py --device mps         # full descriptive inventory, all 4 scales
 ./reproduce.sh                 # all of the above, logged to logs/
 ```
 
