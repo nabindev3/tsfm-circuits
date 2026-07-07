@@ -52,6 +52,23 @@ python dissociation.py --device mps      # Stage 3: double-dissociation table
 ./reproduce.sh                 # all of the above, logged to logs/
 ```
 
+## Confirmatory H1 result (seeds 100–119, unblinded 2026-07-07)
+
+**H1-general: NOT CONFIRMED (1/4).** Under the frozen protocol: **small
+CONFIRMED** (group recovery +0.278 [+0.166, +0.426] vs control +0.004); mini
+fails selection (0 heads > 3× null at both periods); base and large pass
+selection but fail causally (−0.007 / −0.003). Diagnosis (exploratory,
+post-hoc): the frozen selection rule — attention ratio alone, no
+phase-scrambled control, which was invented only after freezing — selects
+token-matching heads (base's H11 column, large's H1 column) that the causal
+test correctly rejects. With the scrambled control (Stage 1/2 pipeline,
+exploratory seeds), the causally-effective groups at base (+0.50 vs +0.07
+control) and large (+0.27 vs 0.00) are recovered. The clean null: **attention
+scores alone cannot find seasonal circuits at scale; a scrambled control is
+necessary.** One protocol deviation was required and is logged in
+`DEVIATIONS.md` (control sampling on large). Raw data:
+`results/confirmatory-h1.json`.
+
 ## Exploratory first results (chronos-t5-small, pattern seasonality, seeds 0–2)
 
 ⚠️ **Exploratory** — obtained before `PREREGISTRATION.md` was frozen. Confirmatory
