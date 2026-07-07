@@ -80,6 +80,20 @@ locus — trend is redundantly encoded everywhere and causally localized
 nowhere. Labeled-exploratory redesigns (4×α, all-layer steering) do not
 rescue it. Raw data: `results/confirmatory-h2.json`.
 
+## Confirmatory H3 result (seeds 105–119, run 2026-07-07)
+
+**H3: NOT CONFIRMED (0/4).** The direction-projection half fails everywhere:
+zero-projecting the H2 direction changes trend error by ≈ 0 (matching the H2
+steering null — no causal trend locus). The head-ablation half fails
+everywhere too, but for two different reasons worth separating: at base/large
+the frozen H1 selection provides token-matching head groups with no seasonal
+effect; at **small** the effect pattern is exactly the predicted dissociation
+(seasonal error +0.037, trend error −0.003, i.e. spared) — but the frozen
+ratio criterion (D-seasonal ≥ 2× D-trend, CI-lb > 1) is ill-posed when the
+spared task's degradation is ~0/negative: the ratio explodes instead of
+passing. A dissociation "too clean" for its own test statistic — reported
+as-is per the stopping rules. Raw data: `results/confirmatory-h3.json`.
+
 ## Exploratory first results (chronos-t5-small, pattern seasonality, seeds 0–2)
 
 ⚠️ **Exploratory** — obtained before `PREREGISTRATION.md` was frozen. Confirmatory
