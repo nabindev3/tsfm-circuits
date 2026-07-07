@@ -374,6 +374,84 @@ def logit_diff(pipe, logits: torch.Tensor, y_clean: float, y_corr: float,
                  - logits[target_token(pipe, y_corr, scale)])
 
 
+def crps(pipe, logits: torch.Tensor, scale: float, y_true: float) -> float:
+    """CRPS of the first-step bin distribution against the true value, computed
+    in closed form from the discrete CDF over bin centers (no sampling). The
+    forecasting-native probabilistic score; lower is better."""
+    tok = pipe.tokenizer
+    n_special = tok.config.n_special_tokens
+    p = torch.softmax(logits[n_special + 1:].float().cpu(), dim=-1)
+    c = tok.centers.float() * scale
+    F = torch.cumsum(p, 0)
+    H = (c >= y_true).float()
+    return float((((F - H)[:-1] ** 2) * torch.diff(c)).sum())
+
+
+# ---------------------------------------------------------------------------
+# ablation (Stage 3: double dissociation)
+# ---------------------------------------------------------------------------
+
+
+def mean_ablate_hooks(pipe, heads: list) -> list:
+    """Forward-pre-hooks that mean-ablate encoder heads: each head's pre-`o`
+    output is replaced by its mean over sequence positions, keeping the average
+    contribution but destroying all position-specific information. Caller must
+    remove the returned handles."""
+    inner = get_inner(pipe)
+    cfg = inner.config
+    num_heads, d_head = cfg.num_heads, cfg.d_kv
+    by_layer: dict = {}
+    for l, h in heads:
+        by_layer.setdefault(l, []).append(h)
+
+    handles = []
+    for layer, layer_heads in by_layer.items():
+        def make_hook(hs):
+            def hook(module, args):
+                out = args[0]
+                b, L, _ = out.shape
+                out4 = out.view(b, L, num_heads, d_head).clone()
+                for h in hs:
+                    out4[:, :, h, :] = out4[:, :, h, :].mean(dim=1, keepdim=True)
+                return (out4.view(b, L, num_heads * d_head),)
+            return hook
+        handles.append(_encoder_o_module(pipe, layer)
+                       .register_forward_pre_hook(make_hook(tuple(layer_heads))))
+    return handles
+
+
+def project_out_hooks(pipe, layer: int, direction: torch.Tensor) -> list:
+    """Forward hook that zero-projects a unit direction from the residual
+    stream at encoder block `layer`'s output (the T5LayerFF output IS the
+    post-block hidden state), at every position. Caller removes the handles."""
+    inner = get_inner(pipe)
+    d = direction.to(get_device(pipe)).float()
+    d = d / d.norm()
+
+    def hook(module, args, output):
+        return output - (output @ d).unsqueeze(-1) * d
+
+    ff = inner.encoder.block[layer].layer[-1]
+    return [ff.register_forward_hook(hook)]
+
+
+@torch.no_grad()
+def forecast_scores(pipe, values: np.ndarray, y_true: float,
+                    hooks: list | None = None) -> dict:
+    """First-step forecast quality (scale-normalized absolute error + CRPS)
+    with optional ablation hooks active. Hooks are removed afterwards."""
+    try:
+        ids, mask, scale = tokenize(pipe, values)
+        logits = _first_step_logits(pipe, ids, mask)[0]
+        s = float(scale[0])
+        yhat = _expected_value(pipe, logits.unsqueeze(0), s)
+        return dict(abs_err=abs(yhat - y_true) / s,
+                    crps=crps(pipe, logits, s, y_true) / s)
+    finally:
+        for h in (hooks or []):
+            h.remove()
+
+
 # ---------------------------------------------------------------------------
 # path patching
 # ---------------------------------------------------------------------------

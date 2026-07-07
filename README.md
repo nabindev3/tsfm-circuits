@@ -21,6 +21,8 @@ ago predicts the next one").
 | `patch_demo.py` | ✅ verified on-device | RQ1 causal: patch every head on period-7↔12 minimal pairs |
 | `inventory.py` | ✅ run on 4 scales | **descriptive circuit inventory**: ranked candidates vs uniform null + scrambled/permutation controls, with 95% bootstrap CIs → `results/` |
 | `causal.py` | ✅ run on 4 scales | **Stage 2 causal validation**: group/single-position patching on 4 pair types, controls, permutation nulls, path patching → `results/` |
+| `stage2_verdicts.py` | ✅ | per-candidate CONFIRMED/rejected verdicts (CI excludes 0) + group verdict vs prereg thresholds |
+| `dissociation.py` | ✅ run on 4 scales | **Stage 3 double dissociation**: ablate {seasonal heads, trend dir, CP heads} × test {seasonal, trend, changepoint, mixed}, ΔCRPS with CIs |
 | `reproduce.sh` | ✅ | rerun everything with fixed seeds, logged to `logs/` |
 
 The harness is verified on all four study models — `chronos-t5-{mini,small,base,large}`
@@ -45,6 +47,8 @@ python demo.py --device mps    # RQ1 descriptive: seasonal heads in Chronos-T5-s
 python patch_demo.py --device mps        # RQ1 causal: per-head patching effects
 python inventory.py --device mps         # full descriptive inventory, all 4 scales
 python causal.py --device mps  # Stage 2: causal validation sweep, all 4 scales
+python stage2_verdicts.py      # per-candidate confirm/reject table
+python dissociation.py --device mps      # Stage 3: double-dissociation table
 ./reproduce.sh                 # all of the above, logged to logs/
 ```
 
@@ -96,10 +100,12 @@ use groups; single heads understate distributed circuits (see results above).
    period/phase/trend-on-off/changepoint-location pairs with controls,
    permutation nulls, and path patching
    *(exploratory; confirmatory rerun on seeds 100–119 pending)*
-4. **RQ2** — probe + steer a trend direction from cached residuals (`cache.resid`)
-5. **RQ3** — changepoint-reset analysis on `season_plus_changepoint` (generator +
-   `changepoint_pair` already in `synthetic.py`)
-6. **RQ4** — double dissociation: ablate seasonal heads vs trend direction, split by family
+4. **RQ2** — probe ✅ (`inventory.py`); steering the trend direction pending —
+   note the informative null: zero-projecting the direction does not hurt trend
+   forecasts (see `dissociation.py`)
+5. **RQ3** — changepoint components inventoried + causally tested ✅
+   (`inventory.py`, `causal.py`, `dissociation.py`)
+6. ✅ **RQ4** — double dissociation table: `dissociation.py` *(exploratory)*
 7. **RQ5** — replicate on `chronos-t5-base` (`--model amazon/chronos-t5-base` works
    everywhere)
 8. SAE pass on `cache.resid` (drop in your existing TopK SAE)

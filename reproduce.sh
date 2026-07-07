@@ -26,5 +26,7 @@ run demo               "$PY" demo.py --device "$DEVICE"
 run patch-demo         "$PY" patch_demo.py --device "$DEVICE"
 run inventory          "$PY" inventory.py --device "$DEVICE"
 run causal             "$PY" causal.py --device "$DEVICE"
+run stage2-verdicts    "$PY" stage2_verdicts.py
+run dissociation       "$PY" dissociation.py --device "$DEVICE"
 
 echo "all reproduced — logs in logs/$STAMP-*.log"
