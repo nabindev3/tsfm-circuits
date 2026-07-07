@@ -420,6 +420,22 @@ def mean_ablate_hooks(pipe, heads: list) -> list:
     return handles
 
 
+def add_direction_hooks(pipe, layer: int, direction: torch.Tensor,
+                        alpha: float) -> list:
+    """Forward hook that ADDS alpha * unit-direction to the residual stream at
+    encoder block `layer`'s output, at every position (steering). Caller
+    removes the handles."""
+    inner = get_inner(pipe)
+    d = direction.to(get_device(pipe)).float()
+    d = d / d.norm()
+
+    def hook(module, args, output):
+        return output + alpha * d
+
+    ff = inner.encoder.block[layer].layer[-1]
+    return [ff.register_forward_hook(hook)]
+
+
 def project_out_hooks(pipe, layer: int, direction: torch.Tensor) -> list:
     """Forward hook that zero-projects a unit direction from the residual
     stream at encoder block `layer`'s output (the T5LayerFF output IS the
