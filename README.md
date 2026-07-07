@@ -69,6 +69,17 @@ necessary.** One protocol deviation was required and is logged in
 `DEVIATIONS.md` (control sampling on large). Raw data:
 `results/confirmatory-h1.json`.
 
+## Confirmatory H2 result (seeds 100–119, unblinded 2026-07-07)
+
+**H2-general: NOT CONFIRMED (0/4) — decodable ≠ steerable.** Probes pass at
+1.00 held-out accuracy in every model, but adding ±α·(probe direction) moves
+the first-step forecast in the predicted direction only 50–60% of the time
+(chance 50%), despite large movements. LOO layer selection saturated at 1.00
+for all layers (tie-break → layer 0): there is no signal to pick a steering
+locus — trend is redundantly encoded everywhere and causally localized
+nowhere. Labeled-exploratory redesigns (4×α, all-layer steering) do not
+rescue it. Raw data: `results/confirmatory-h2.json`.
+
 ## Exploratory first results (chronos-t5-small, pattern seasonality, seeds 0–2)
 
 ⚠️ **Exploratory** — obtained before `PREREGISTRATION.md` was frozen. Confirmatory
