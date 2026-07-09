@@ -28,5 +28,9 @@ run inventory          "$PY" inventory.py --device "$DEVICE"
 run causal             "$PY" causal.py --device "$DEVICE"
 run stage2-verdicts    "$PY" stage2_verdicts.py
 run dissociation       "$PY" dissociation.py --device "$DEVICE"
+run bolt-replication   "$PY" bolt_replication.py
+run emergence          "$PY" emergence.py
+run mechanism          "$PY" mechanism.py --device "$DEVICE"
+run payoff             "$PY" payoff_failure.py --device "$DEVICE"
 
 echo "all reproduced — logs in logs/$STAMP-*.log"

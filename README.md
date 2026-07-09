@@ -94,6 +94,52 @@ spared task's degradation is ~0/negative: the ratio explodes instead of
 passing. A dissociation "too clean" for its own test statistic — reported
 as-is per the stopping rules. Raw data: `results/confirmatory-h3.json`.
 
+## Stage 4 — generality: what generalizes and what doesn't
+
+**Across scale** (`emergence.py`, `results/emergence.png`): lag-tracking heads
+exist at every Chronos-T5 scale and attention sharpens with scale (max ratio
+4.7× → 18.5×), but there is **no LLM-style phase transition**. Instead:
+*consolidate, then dissolve* — the best single head's causal effect rises
+mini→base (+0.12 → +0.40, base's L9H1) then collapses at large (+0.02) while
+the group effect stays strong (+0.27 vs 0.00 control); the redundancy index
+(1 − best-head/group) goes 0.00 → 0.16 → 0.19 → **0.93**.
+
+**Across family**: the motif does NOT transfer, and the two negatives triangulate
+the cause. TimesFM 2.5-200M (different family: decoder-only, patch input): zero
+lag-tracking heads. **Chronos-Bolt-small (same 6L×8H T5 backbone as the
+confirmed model, only the I/O differs — patches + quantile head): also zero**,
+with scrambled controls matching real series and dead causal patches
+(`bolt_replication.py`). Same architecture, same training recipe family, no
+value-bin tokenization → no induction heads. **Generalization statement:
+seasonal induction heads are a property of LM-style value-bin tokenization,
+not of transformer forecasters in general — Chronos reinvents induction heads
+precisely because its design makes forecasting language modeling.**
+
+## Stage 5 — mechanism + payoff (chronos-t5-small, the confirmed circuit)
+
+**Mechanism** (`mechanism.py`): the period is **detected from the input, not a
+fixed learned lag** — on a mid-sequence period switch (7→12) the confirmed
+heads flip from 14.8× lag-7 preference to 16.0× lag-12 preference, re-locking
+within **5 steps (< half a cycle of the new period)**. This one experiment
+explains the cross-period generalization, the mismatched-clean transfer
+(abstract periodicity), and the changepoint re-locking, and it is why "these
+heads are induction heads" is the right description: they attend to "one
+*current* period ago" as an input-dependent relation. Trend, by contrast, is
+**not a linear readout**: ±k steering gives a flat-then-saturating asymmetric
+response (r = 0.77), quantifying the H2 null.
+
+**Payoff** (`payoff_failure.py`): circuit-informed selective prediction on
+real data (ETTh1 hourly, period 24, 150 windows). Low activation of the three
+confirmed heads predicts actual mis-forecasting: Spearman(activation,
+MAE/scale) = **−0.376** (p = 2×10⁻⁶); keeping the top-25% activation windows
+cuts normalized MAE by **38%** (0.167 → 0.104). The heads are also a strong
+real-data seasonality meter (ρ = −0.673 against seasonal-naive
+predictability). Methodological caution that falls out for free: against
+**MASE** the correlation *reverses* (+0.18) because MASE's seasonal-naive
+denominator is smallest exactly where the heads fire — MASE-based difficulty
+labels partly encode seasonality strength, which matters for any
+MASE-difficulty pipeline (including fm-difficulty).
+
 ## Exploratory first results (chronos-t5-small, pattern seasonality, seeds 0–2)
 
 ⚠️ **Exploratory** — obtained before `PREREGISTRATION.md` was frozen. Confirmatory
