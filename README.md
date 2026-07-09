@@ -12,7 +12,9 @@ ago predicts the next one").
 
 | File | Status | Purpose |
 |---|---|---|
+| `PAPER.md` | ✅ draft | **the manuscript** — abstract through related work, every number from `results/` |
 | `PREREGISTRATION.md` | 🔒 frozen | hypotheses, thresholds, seed policy, stopping rules — **read first** |
+| `DEVIATIONS.md` | ✅ | the one documented protocol deviation (D1, control sampling on large) |
 | `synthetic.py` | ✅ tested | controlled series + **minimal-pair API** (the causal-patching backbone) |
 | `attention_analysis.py` | ✅ tested | seasonal attention score + patching-effect math + **bootstrap CIs** |
 | `chronos_harness.py` | ✅ verified on-device | tokenize → cache attention + residuals; per-head, group & encoder-output patching |
