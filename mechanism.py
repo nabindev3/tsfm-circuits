@@ -86,13 +86,18 @@ def main() -> None:
                        for l, h in heads], axis=0)
         profiles7.append(p7)
         profiles12.append(p12)
-    p7 = np.nanmean(profiles7, axis=0)
-    p12 = np.nanmean(profiles12, axis=0)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        p7 = np.nanmean(profiles7, axis=0)
+        p12 = np.nanmean(profiles12, axis=0)
 
     early = slice(30, CP)                    # inside the P=7 regime
     late = slice(CP + 24, LENGTH)            # well after the switch
-    e7, e12 = np.nanmean(p7[early]), np.nanmean(p12[early])
-    l7, l12 = np.nanmean(p7[late]), np.nanmean(p12[late])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        e7, e12 = np.nanmean(p7[early]), np.nanmean(p12[early])
+        l7, l12 = np.nanmean(p7[late]), np.nanmean(p12[late])
     print(f"\n(1) period switch 7->12 at t={CP} (mean over confirmed heads, "
           f"{len(list(SEEDS))} seeds):")
     print(f"    queries before switch: mass@lag7 {e7:.3f} vs mass@lag12 "

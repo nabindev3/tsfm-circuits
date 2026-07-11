@@ -65,7 +65,7 @@ def main() -> None:
 
     starts = np.linspace(0, len(ts) - CONTEXT - HORIZON - 1, N_WINDOWS,
                          dtype=int)
-    acts, errs = [], []
+    acts, mases, maes_normalized, naive_denoms_normalized = [], [], [], []
     torch.manual_seed(0)
     for w, s0 in enumerate(starts):
         context = ts[s0:s0 + CONTEXT]
@@ -82,40 +82,66 @@ def main() -> None:
                                num_samples=NUM_SAMPLES)
         forecast = samples[0].float().median(dim=0).values.numpy()
 
-        acts.append(act)
-        errs.append(mase(forecast, truth, context))
+        # Calculate MAE
+        mae = float(np.mean(np.abs(forecast - truth)))
 
-    acts, errs = np.array(acts), np.array(errs)
+        # Calculate MASE denominator (seasonal-naive error)
+        naive = np.abs(context[PERIOD:] - context[:-PERIOD])
+        denom = float(np.mean(naive))
+
+        acts.append(act)
+        mases.append(mae / max(denom, 1e-5))
+        maes_normalized.append(mae / cache.scale)
+        naive_denoms_normalized.append(denom / cache.scale)
+
+    acts = np.array(acts)
+    mases = np.array(mases)
+    maes_normalized = np.array(maes_normalized)
+    naive_denoms_normalized = np.array(naive_denoms_normalized)
+
     from scipy.stats import spearmanr
-    rho, pval = spearmanr(acts, errs)
-    print(f"\nSpearman(activation, MASE) = {rho:+.3f} (p = {pval:.2g}) — "
-          f"negative = low activation predicts high error")
+    rho_mase, pval_mase = spearmanr(acts, mases)
+    rho_mae, pval_mae = spearmanr(acts, maes_normalized)
+    rho_naive, pval_naive = spearmanr(acts, naive_denoms_normalized)
+
+    print(f"\nSpearman(activation, MASE) = {rho_mase:+.3f} (p = {pval_mase:.2g}) — "
+          f"positive correlation reverses expectation due to denominator scaling")
+    print(f"Spearman(activation, MAE/scale) = {rho_mae:+.3f} (p = {pval_mae:.2g}) — "
+          f"negative correlation means low activation predicts high error")
+    print(f"Spearman(activation, seasonal-naive predictability) = {rho_naive:+.3f} (p = {pval_naive:.2g}) — "
+          f"strong seasonality meter")
 
     order = np.argsort(-acts)   # keep highest-activation windows first
-    print("selective prediction (keep highest-activation windows):")
-    coverage_rows = {}
+    print("\nselective prediction (keep highest-activation windows, metric=MAE/scale):")
+    coverage_rows_mae = {}
     for cov in (1.0, 0.75, 0.5, 0.25):
-        keep = order[: int(cov * len(errs))]
-        coverage_rows[cov] = float(errs[keep].mean())
-        print(f"  coverage {cov:4.0%}: mean MASE {errs[keep].mean():.3f}")
-    improvement = 1 - coverage_rows[0.25] / coverage_rows[1.0]
-    print(f"  -> filtering to the top-25% activation windows cuts MASE by "
+        keep = order[: int(cov * len(maes_normalized))]
+        coverage_rows_mae[cov] = float(maes_normalized[keep].mean())
+        print(f"  coverage {cov:4.0%}: mean MAE/scale {maes_normalized[keep].mean():.3f}")
+    improvement = 1 - coverage_rows_mae[0.25] / coverage_rows_mae[1.0]
+    print(f"  -> filtering to the top-25% activation windows cuts MAE/scale by "
           f"{improvement:.0%}")
 
-    worst = errs >= np.quantile(errs, 0.75)
+    worst_mae = maes_normalized >= np.quantile(maes_normalized, 0.75)
     from sklearn.metrics import roc_auc_score
-    auc = float(roc_auc_score(worst, -acts))
-    print(f"AUC (flag worst-quartile MASE from LOW activation) = {auc:.3f}")
+    auc_mae = float(roc_auc_score(worst_mae, -acts))
+    print(f"AUC (flag worst-quartile MAE/scale from LOW activation) = {auc_mae:.3f}")
 
     Path("results/payoff-failure.json").write_text(json.dumps(dict(
         model=MODEL, heads=[list(h) for h in heads], dataset="ETTh1/OT",
         context=CONTEXT, horizon=HORIZON, period=PERIOD,
-        activations=acts.tolist(), mase=errs.tolist(),
-        spearman=[float(rho), float(pval)], auc=auc,
-        coverage_mase={str(k): v for k, v in coverage_rows.items()}),
+        activations=acts.tolist(), mase=mases.tolist(),
+        maes_normalized=maes_normalized.tolist(),
+        naive_denoms_normalized=naive_denoms_normalized.tolist(),
+        spearman_mase=[float(rho_mase), float(pval_mase)],
+        spearman_mae_normalized=[float(rho_mae), float(pval_mae)],
+        spearman_naive=[float(rho_naive), float(pval_naive)],
+        auc_mae=auc_mae,
+        coverage_mae_normalized={str(k): v for k, v in coverage_rows_mae.items()}),
         indent=1))
     print("wrote results/payoff-failure.json")
 
 
 if __name__ == "__main__":
     main()
+
