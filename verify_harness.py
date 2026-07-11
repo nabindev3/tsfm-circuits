@@ -25,7 +25,6 @@ from __future__ import annotations
 import argparse
 import time
 
-import numpy as np
 import torch
 
 from chronos_harness import (get_inner, load_pipeline, patch_encoder_output,

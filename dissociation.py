@@ -32,7 +32,7 @@ import numpy as np
 import torch
 
 from attention_analysis import bootstrap_ci
-from chronos_harness import (forecast_scores, get_inner, load_pipeline,
+from chronos_harness import (forecast_scores, load_pipeline,
                              mean_ablate_hooks, project_out_hooks,
                              run_with_cache)
 from synthetic import season_plus_changepoint, seasonal, seasonal_trend, trend

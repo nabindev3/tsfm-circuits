@@ -128,6 +128,7 @@ def run_model(model_id: str, device: str | None, out_dir: Path) -> dict:
                     per_head_cand[c].append(eff([c]))
                 for c in null_heads:
                     per_head_null[c].append(eff([c]))
+                res["cp_group_period"].append(eff(cp_heads))
                 # mismatched-clean control: clean run from a different seed
                 other = PAIR_TYPES["period"](seed + 50)
                 r = patch_heads(pipe, other.clean.values, pair.corrupted.values,
@@ -135,8 +136,6 @@ def run_model(model_id: str, device: str | None, out_dir: Path) -> dict:
                 res["mismatched"].append(both_effects(pipe, r, pair))
             if ptype == "cp_location":
                 res["cp_group_cp"].append(eff(cp_heads))
-            if ptype == "period":
-                res["cp_group_period"].append(eff(cp_heads))
 
     # ------- report: group effects by pair type (logit metric primary) -------
     print(f"  group patch of seasonal candidates, logit-diff recovery "

@@ -64,8 +64,8 @@ def main() -> None:
     ranked = rank_heads(r1)
     if args.top:
         ranked = ranked[: args.top]
-    print(f"\nratio = attention mass at the seasonal lag / uniform null "
-          f"(1.0 = no preference)")
+    print("\nratio = attention mass at the seasonal lag / uniform null "
+          "(1.0 = no preference)")
     print(f"{'head':>8} {'P=' + str(args.period):>8} {'P=' + str(args.period2):>8}"
           f"  both>3x")
     for layer, head, ratio in ranked:

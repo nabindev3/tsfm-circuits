@@ -307,13 +307,8 @@ def _self_test() -> None:
     pair = period_pair(7, 12, length=140, noise=0.05, seed=4)
     assert pair.clean.length == pair.corrupted.length == 140
     assert pair.divergence >= 0.5
-    # shared noise: the noise realization is identical, so subtracting the
-    # noiseless versions from each must give the same residual
-    c0 = seasonal(7, 140, 1, seed=4)
-    n_clean = pair.clean.values - c0.values
-    corr0 = seasonal(12, 140, 1, seed=4,
-                     pattern_seed=pair.corrupted.meta["seed"] + 20_000)
-    # (pattern_seed attempt offset unknown here; just check noise std is right)
+    # noise realization has the right scale (shared across the pair)
+    n_clean = pair.clean.values - seasonal(7, 140, 1, seed=4).values
     assert abs(np.std(n_clean) - 0.05) < 0.02
 
     # changepoint pair identical before the changepoint
@@ -322,10 +317,10 @@ def _self_test() -> None:
     assert np.allclose(cpair.clean.values[:cp_at], cpair.corrupted.values[:cp_at])
     assert not np.allclose(cpair.clean.values[cp_at:], cpair.corrupted.values[cp_at:])
 
-    # trend pair mirrors around the level
+    # trend pair mirrors around zero level
     tpair = trend_pair(slope=0.02, length=100, seed=6)
-    assert np.isclose(tpair.clean.future[0], -tpair.corrupted.future[0] +
-                      2 * 0.0, atol=1e-9)
+    assert np.isclose(tpair.clean.future[0], -tpair.corrupted.future[0],
+                      atol=1e-9)
 
     # phase pair: same period & pattern values, shifted; divergent at t+1
     ppair = phase_pair(period=7, length=168, noise=0.05, seed=7)

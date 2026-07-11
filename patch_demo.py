@@ -16,8 +16,8 @@ import argparse
 import numpy as np
 
 from attention_analysis import bootstrap_ci, head_scores
-from chronos_harness import (DEFAULT_MODEL, get_inner, load_pipeline,
-                             patch_all_heads, run_with_cache)
+from chronos_harness import (DEFAULT_MODEL, load_pipeline, patch_all_heads,
+                             run_with_cache)
 from synthetic import period_pair
 
 
@@ -33,7 +33,6 @@ def main() -> None:
     args = ap.parse_args()
 
     pipe = load_pipeline(args.model, args.device)
-    cfg = get_inner(pipe).config
 
     effects, attn_ratios = [], []
     for seed in range(args.n_seeds):
@@ -61,7 +60,7 @@ def main() -> None:
               f"{mean_attn[layer, head]:12.2f}{flag}")
 
     eff_stack = np.stack(effects)  # [seeds, layers, heads]
-    print(f"\ntop-5 causal heads (mean [95% bootstrap CI over seeds]):")
+    print("\ntop-5 causal heads (mean [95% bootstrap CI over seeds]):")
     for flat in order[:5]:
         layer, head = np.unravel_index(flat, mean_eff.shape)
         m, lo, hi = bootstrap_ci(eff_stack[:, layer, head])

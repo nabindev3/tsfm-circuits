@@ -92,7 +92,7 @@ def main() -> None:
           f"negative = low activation predicts high error")
 
     order = np.argsort(-acts)   # keep highest-activation windows first
-    print(f"selective prediction (keep highest-activation windows):")
+    print("selective prediction (keep highest-activation windows):")
     coverage_rows = {}
     for cov in (1.0, 0.75, 0.5, 0.25):
         keep = order[: int(cov * len(errs))]
